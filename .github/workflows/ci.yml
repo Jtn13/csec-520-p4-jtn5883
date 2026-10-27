@@ -1,0 +1,19 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Lint (byte-compile)
+        run: python -m py_compile src/*.py tests/*.py
+      - name: Smoke tests
+        # Tests covering YOUR Naive Bayes skip until you write it, then must pass.
+        run: python -m pytest -q
+      - name: Reproduce (sanity run on the bundled sample)
+        run: python -m src.run --config config.yaml

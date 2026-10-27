@@ -1,0 +1,149 @@
+# CSEC 520/620: Project 4 Template (Detecting SMS Spam)
+
+Starter repository for **Project 4: Detecting SMS Spam (unstructured text)**. It enforces the course
+**reproducibility standard**:
+
+> A grader can recreate your results from your repository in **one command**.
+
+Stack: **Python + NumPy / scikit-learn**. Minimal setup: a plain `venv` and `pip`. Requires Python 3.10+ and `make`.
+
+---
+
+## Quick start
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt    # (or just: make setup)
+
+make reproduce        # == python -m src.run --config config.yaml
+```
+
+Out of the box this runs on a **tiny bundled sample** (no download) and writes `results/metrics.json` and
+figures. The sample only exists so you can debug quickly; the deliverable uses the real corpus: see
+`data/README.md`, then set in `config.yaml`:
+
+```yaml
+data:
+  source: file
+  path: data/SMSSpamCollection
+```
+
+---
+
+## What you have to write
+
+| Piece | Status | Purpose |
+|---|---|---|
+| `src/data.py`, `src/features.py`, `src/models.py`, `src/evaluate.py`, `src/run.py` | provided | loading, the two split protocols, TF-IDF/counts (fitted on training text only), linear SVM, KNN, exploratory k-means, metrics, figures |
+| `NaiveBayesReference` in `src/naive_bayes.py` | provided | wraps scikit-learn; lets the pipeline run, and is your **correctness oracle** |
+| `NaiveBayesScratch` in `src/naive_bayes.py` | **stubs** | **Yours to implement.** This is the assignment. |
+
+Implement, roughly in this order (the model and equations are in the file's docstring and in your course notes on Naive Bayes):
+
+1. `_class_log_prior`: log class priors from the label counts
+2. `_feature_log_prob`: per-class word log-probabilities with **add-alpha (Laplace) smoothing**
+3. `fit`: sets `classes_`, `class_log_prior_`, `feature_log_prob_`
+4. `predict_log_proba`: normalized log posteriors, in **log space** (log-sum-exp)
+5. `predict`
+
+Then flip the switch in `config.yaml`:
+
+```yaml
+naive_bayes:
+  implementation: scratch     # was: reference
+```
+
+Use NumPy (and `scipy.special.logsumexp` if you like). **Do not call a library Naive Bayes inside
+`NaiveBayesScratch`.** The linear SVM, KNN, TF-IDF and the metrics may use scikit-learn.
+
+### Checking your work
+
+```bash
+make test        # tests for your code SKIP until you implement it, then must pass
+make reproduce   # with compare_to_reference: true, records agreement with scikit-learn
+make grade       # the objective harness the grader runs
+```
+
+`make reproduce` on the scratch path writes a `reference_check` block per protocol:
+
+```json
+"reference_check": {"prediction_agreement": 1.0, "max_abs_diff_log_prob": 1e-15,
+                    "max_abs_diff_feature_log_prob": 0.0}
+```
+
+Agreement near 1.0 with tiny differences means your implementation estimates the same model as scikit-learn.
+
+---
+
+## Tasks (see the project handout)
+
+- **Features:** build TF-IDF (and count) vectors. Explore the options in `config.yaml -> features`
+  (n-grams, `min_df`, `sublinear_tf`, lowercasing) and record what helps.
+- **Naive Bayes:** yours. Sweep `alpha` (`evaluate.alpha_sweep`, including 0) and explain what you see.
+- **Linear SVM:** choose `C` by cross-validation **on the training data only**.
+- **KNN** with k = 1, 3, 5, and **k-means** on the LSI-reduced vectors (optionally your Project 2 code:
+  copy it to `src/p2_kmeans.py` and set `kmeans.implementation: p2`).
+- **Evaluate** under both protocols: the paper's (`paper`: first 30% for training) and a `stratified` split.
+  Report precision, recall (Spam Caught), Blocked Ham, F1, MCC and ROC-AUC / PR-AUC, not accuracy alone.
+- **Compare** with Almeida et al. (2011).
+- **Exploratory (Enron-Spam), worth up to 10 extra points (5 cross-corpus transfer + 5 comparison with Metsis et al.):** repeat the study on the larger Enron-Spam e-mail corpus and test how well a filter transfers
+  between SMS and e-mail (`evaluate.cross_corpus: true`). Download steps are in `data/README.md`; compare with Metsis et al. (2006).
+
+## Repository layout
+
+```
+├── config.yaml         # all knobs live here (edit this, not the code)
+├── Makefile            # setup / reproduce / test / lint / grade / clean
+├── requirements.txt    # minimal pip dependencies
+├── src/
+│   ├── data.py         # load the corpus, de-duplicate, paper / stratified splits
+│   ├── features.py     # TF-IDF / counts, fitted on TRAIN only
+│   ├── naive_bayes.py  # NaiveBayesReference (given) + NaiveBayesScratch (YOURS)
+│   ├── models.py       # linear SVM, KNN, exploratory k-means
+│   ├── evaluate.py     # metrics (SC%, BH%, MCC, ROC/PR-AUC) and figures
+│   └── run.py          # single entry point: python -m src.run
+├── tests/              # smoke tests + a tiny bundled sample (fixtures/)
+├── data/               # NOT committed: see data/README.md
+├── results/            # regenerated by `make reproduce`
+├── report/             # your IEEE-format report
+├── grading/            # agent-gradable: rubric + auto harness + protocol
+└── .github/workflows/  # CI: lint + tests + a sanity reproduce run
+```
+
+## Evaluation rules
+
+- **Fit on training data only**: vocabulary, IDF weights, and every hyperparameter (alpha, C, k).
+  Never use the test set to choose anything.
+- **Duplicates** in the corpus can put the same message in train and test; `data.deduplicate` handles it.
+  Say what you chose and what it changed.
+- **Baseline to beat:** labelling everything ham scores 86.6% accuracy while catching no spam.
+- Work in **log space**; smooth your counts; remember the base rate.
+
+## Requirements checklist (per the project handout)
+
+- [ ] `make reproduce` runs clean from a fresh environment on the real corpus
+- [ ] `naive_bayes.implementation: scratch`: results come from YOUR code
+- [ ] Naive Bayes written from scratch (no library Naive Bayes in `NaiveBayesScratch`)
+- [ ] Vectorizer fitted on training text only; hyperparameters chosen without the test set
+- [ ] Both protocols reported; precision/recall/F1/MCC/Spam Caught/Blocked Ham/AUC
+- [ ] Duplicate handling explained
+- [ ] Comparison with the paper
+- [ ] Report in IEEE format (`report/`), numbers matching `results/metrics.json`
+- [ ] `SUBMISSION.md` filled in
+- [ ] (bonus, up to +10) Exploratory Enron-Spam work done and reported
+
+## Submitting
+
+```bash
+git add -A && git commit -m "p4 final" && git push
+git tag p4-final && git push origin p4-final
+```
+
+Submit your repository URL and the `p4-final` tag.
+
+## Academic integrity & AI use
+
+Follow the syllabus AI-use policy: assistants are allowed as aids, but acknowledge substantive AI use and
+**do not submit AI-generated implementations of the algorithm you were asked to build**. Writing
+`NaiveBayesScratch` yourself is the point of this project.

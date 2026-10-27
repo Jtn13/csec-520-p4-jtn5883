@@ -1,0 +1,46 @@
+# Experiment configuration. Edit this, not the code, to change a run.
+seed: 42
+
+data:
+  source: sample             # "sample" = tiny bundled corpus (debugging) | "file" = the real SMS Spam Collection
+                             # | "enron" = run the whole pipeline on Enron-Spam instead (see data/README.md)
+  path: data/SMSSpamCollection
+  enron_path: data/enron1    # extracted Enron-Spam folder with ham/ and spam/ (exploratory task)
+  deduplicate: true          # drop exact duplicate messages BEFORE splitting (say what you chose in your report)
+  train_frac: 0.30           # fraction of messages used for training in both protocols
+
+protocols: [paper, stratified]   # paper = first train_frac of the file for training, rest for testing (Almeida et al.)
+                                 # stratified = random split that preserves the spam rate
+
+features:                    # fitted on TRAINING text only
+  kind: tfidf                # "counts" | "tfidf"
+  lowercase: true
+  ngram_range: [1, 1]
+  min_df: 1
+  sublinear_tf: false        # replace tf with 1 + ln(tf)  (tfidf only)
+  max_features: null
+
+naive_bayes:
+  implementation: reference  # "reference" = provided scikit-learn baseline | "scratch" = YOUR implementation
+  alpha: 1.0                 # Laplace / add-alpha smoothing
+
+svm:
+  C: 1.0                     # tune by cross-validation on TRAINING data only
+
+knn:
+  ks: [1, 3, 5]              # as in the paper
+  metric: cosine
+
+kmeans:                      # exploratory clustering of the TF-IDF vectors (labels used to EVALUATE only)
+  k: 2
+  implementation: sklearn    # "sklearn" | "p2" (your Project 2 code in src/p2_kmeans.py, class KMeansScratch)
+  lsi_components: 50         # reduce with truncated SVD first
+
+evaluate:
+  cross_corpus: false        # exploratory: train on the main corpus, test on Enron-Spam (and the reverse)
+  alpha_sweep: [0, 0.01, 0.1, 0.5, 1.0, 2.0]   # Naive Bayes smoothing sweep (alpha = 0 shows the zero-frequency problem)
+
+compare_to_reference: true   # when naive_bayes.implementation = scratch, also run the reference and report agreement
+
+output:
+  dir: results

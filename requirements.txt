@@ -1,0 +1,11 @@
+# Minimal dependencies. Install into a plain virtual environment:
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Project 4 is classical ML on text: no deep-learning framework needed.
+numpy
+scipy
+scikit-learn      # TF-IDF, the reference Naive Bayes, SVM, KNN, metrics
+matplotlib
+pyyaml
+pytest
