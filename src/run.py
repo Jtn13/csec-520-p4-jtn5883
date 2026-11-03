@@ -5,6 +5,7 @@ results/metrics.json and figures to the output directory, for every protocol in 
 """
 from __future__ import annotations
 
+import copy
 import argparse
 import json
 import os
@@ -19,8 +20,8 @@ from .data import load_split, read_corpus, read_enron, deduplicate
 from .features import fit_transform_split
 from .naive_bayes import NaiveBayesReference, NaiveBayesScratch, build_nb
 from .features import build_vectorizer
-from .models import build_svm, build_knn, spam_scores_from_log_proba, explore_kmeans
-
+from .models import (build_svm, build_knn, tune_svm, spam_scores_from_log_proba, explore_kmeans, oof_spam_scores, choose_threshold)
+from sklearn.svm import LinearSVC
 
 def set_seed(seed):
     random.seed(seed)
@@ -32,6 +33,15 @@ def run_protocol(cfg, protocol, out):
     tr_t, y_tr, te_t, y_te, info = load_split(cfg, protocol)
     X_tr, X_te, vec = fit_transform_split(cfg, tr_t, te_t)   # vocabulary + IDF from TRAIN only
     info["n_features"] = int(X_tr.shape[1])
+    nb_kind = cfg["features"].get("nb_kind", cfg["features"].get("kind", "tfidf"))
+    if nb_kind != cfg["features"].get("kind", "tfidf"):
+        cfg_nb = copy.deepcopy(cfg)
+        cfg_nb["features"]["kind"] = nb_kind
+        Xnb_tr, Xnb_te, _ = fit_transform_split(cfg_nb, tr_t, te_t)
+    else:
+        Xnb_tr, Xnb_te = X_tr, X_te
+    info["nb_features"] = nb_kind
+    info["n_features_nb"] = int(Xnb_tr.shape[1])
     res = {"protocol": protocol, **info, "models": {}}
 
     def record(name, y_pred, scores, extra=None):
@@ -45,23 +55,23 @@ def run_protocol(cfg, protocol, out):
     curves = {}
 
     # ---- Naive Bayes (yours when implementation: scratch) ---------------------------------
-    nb = build_nb(cfg).fit(X_tr, y_tr)
-    lp = nb.predict_log_proba(X_te)
-    record("naive_bayes", nb.predict(X_te), spam_scores_from_log_proba(lp, nb.classes_),
+    nb = build_nb(cfg).fit(Xnb_tr, y_tr)
+    lp = nb.predict_log_proba(Xnb_te)
+    record("naive_bayes", nb.predict(Xnb_te), spam_scores_from_log_proba(lp, nb.classes_),
            {"implementation": cfg["naive_bayes"].get("implementation", "reference"),
             "alpha": float(cfg["naive_bayes"].get("alpha", 1.0))})
-    tn, fp, fn, tp = ev.confusion(y_te, nb.predict(X_te))
+    tn, fp, fn, tp = ev.confusion(y_te, nb.predict(Xnb_te))
     ev.save_confusion_png(tn, fp, fn, tp, os.path.join(out, f"confusion_nb_{protocol}.png"),
                           f"Naive Bayes ({protocol})")
 
     # ---- does YOUR Naive Bayes agree with scikit-learn? -----------------------------------
     if cfg["naive_bayes"].get("implementation") == "scratch" and cfg.get("compare_to_reference", False):
-        ref = NaiveBayesReference(alpha=float(cfg["naive_bayes"].get("alpha", 1.0))).fit(X_tr, y_tr)
-        agree = float(np.mean(ref.predict(X_te) == nb.predict(X_te)))
+        ref = NaiveBayesReference(alpha=float(cfg["naive_bayes"].get("alpha", 1.0))).fit(Xnb_tr, y_tr)
+        agree = float(np.mean(ref.predict(Xnb_te) == nb.predict(Xnb_te)))
         res["reference_check"] = {
             "prediction_agreement": agree,
             "max_abs_diff_log_prob": float(np.max(np.abs(
-                ref.predict_log_proba(X_te) - lp))),
+                ref.predict_log_proba(Xnb_te) - lp))),
             "max_abs_diff_feature_log_prob": float(np.max(np.abs(
                 ref.feature_log_prob_ - nb.feature_log_prob_))),
         }
@@ -72,9 +82,9 @@ def run_protocol(cfg, protocol, out):
         cls = NaiveBayesScratch if cfg["naive_bayes"].get("implementation") == "scratch" else NaiveBayesReference
         with np.errstate(divide="ignore", invalid="ignore"):
             try:
-                m = cls(alpha=float(a)).fit(X_tr, y_tr)
-                lpa = m.predict_log_proba(X_te)
-                met = ev.classification_metrics(y_te, m.predict(X_te))
+                m = cls(alpha=float(a)).fit(Xnb_tr, y_tr)
+                lpa = m.predict_log_proba(Xnb_te)
+                met = ev.classification_metrics(y_te, m.predict(Xnb_te))
                 sweep.append({"alpha": float(a), "f1": met["f1"], "mcc": met["mcc"],
                               "blocked_ham_pct": met["blocked_ham_pct"],
                               "spam_caught_pct": met["spam_caught_pct"],
@@ -87,9 +97,38 @@ def run_protocol(cfg, protocol, out):
                             [s["mcc"] for s in sweep], os.path.join(out, f"alpha_sweep_{protocol}.png"))
 
     # ---- linear SVM ---------------------------------------------------------------
-    svm = build_svm(cfg).fit(X_tr, y_tr)
-    record("linear_svm", svm.predict(X_te), svm.decision_function(X_te), {"C": float(cfg["svm"]["C"])})
-
+    svm, svm_info = tune_svm(cfg, tr_t, y_tr)          # C chosen by CV on TRAINING text only
+    te_list = list(te_t)
+    record("linear_svm", svm.predict(te_list), svm.decision_function(te_list), svm_info)
+     
+    # ---- operating point: threshold picked on TRAINING data (out-of-fold), test scored once ----
+    op = cfg.get("operating_point")
+    if op:
+        cap = float(op.get("max_blocked_ham_pct", 0.5))
+        folds = int(op.get("cv_folds", 5))
+        cfg_nbv = copy.deepcopy(cfg)
+        cfg_nbv["features"]["kind"] = nb_kind
+        best_C = svm_info["C"]
+        candidates = {
+            "naive_bayes": (
+                lambda: build_vectorizer(cfg_nbv),
+                lambda: build_nb(cfg),
+                lambda m, X: spam_scores_from_log_proba(m.predict_log_proba(X), m.classes_),
+                spam_scores_from_log_proba(lp, nb.classes_)),
+            "linear_svm": (
+                lambda: build_vectorizer(cfg),
+                lambda: LinearSVC(C=best_C, random_state=seed, max_iter=10000),
+                lambda m, X: m.decision_function(X),
+                svm.decision_function(te_list)),
+        }
+        res["operating_point"] = {"max_blocked_ham_pct": cap, "cv_folds": folds}
+        for name, (mk_vec, mk_model, score_fn, te_scores) in candidates.items():
+            oof = oof_spam_scores(tr_t, y_tr, mk_vec, mk_model, score_fn, folds, seed)
+            thr = choose_threshold(oof, y_tr, cap)
+            y_pred = (np.asarray(te_scores) >= thr["threshold"]).astype(int)
+            m = ev.classification_metrics(y_te, y_pred)
+            m.update(thr)
+            res["models"][f"{name}_op"] = m
     # ---- KNN, k = 1, 3, 5 as in the paper ----------------------------------------------
     for k in cfg["knn"]["ks"]:
         knn = build_knn(cfg, k).fit(X_tr, y_tr)

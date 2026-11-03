@@ -1,0 +1,51 @@
+seed: 42
+
+data:
+  source: file
+  path: data/SMSSpamCollection
+  enron_path: data/enron1
+  deduplicate: false              # paper replication: duplicates kept, as in Almeida et al.
+  train_frac: 0.3
+
+protocols: [paper, stratified]
+
+features:
+  kind: tfidf
+  nb_kind: counts
+  lowercase: true
+  ngram_range: [1, 1]
+  min_df: 1
+  sublinear_tf: false
+  max_features: null
+
+naive_bayes:
+  implementation: scratch
+  alpha: 1.0
+
+svm:
+  C: 1.0
+  C_grid: [0.01, 0.1, 1, 10, 100]
+  cv_folds: 5
+  cv_scoring: f1
+
+knn:
+  ks: [1, 3, 5]
+  metric: cosine
+
+kmeans:
+  k: 10
+  implementation: p2
+  lsi_components: 50
+
+operating_point:
+  max_blocked_ham_pct: 0.5
+  cv_folds: 5
+
+evaluate:
+  cross_corpus: false
+  alpha_sweep: [0, 0.01, 0.1, 0.5, 1.0, 2.0]
+
+compare_to_reference: true
+
+output:
+  dir: results/nodedup

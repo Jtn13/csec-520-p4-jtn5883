@@ -3,7 +3,7 @@
 .PHONY: help setup reproduce test lint grade clean
 
 VENV := .venv
-PY := $(VENV)/bin/python
+PY := $(VENV)\Scripts\python
 
 help:
 	@echo "make setup      - create .venv and install requirements"

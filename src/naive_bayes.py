@@ -16,7 +16,10 @@ Work in LOG space (products of thousands of small probabilities underflow) and n
 posteriors with the log-sum-exp trick.
 """
 from __future__ import annotations
-
+import numpy as np
+import scipy.sparse as sp
+from scipy.special import logsumexp
+import warnings
 
 class NaiveBayesReference:
     """Scikit-learn baseline with the same interface as NaiveBayesScratch."""
@@ -55,7 +58,9 @@ class NaiveBayesScratch:
     # ---- the pieces to write, roughly in this order --------------------------------
     def _class_log_prior(self, y):
         """Return log P(c) for each class (in the order of self.classes_)."""
-        raise NotImplementedError("compute log class priors from the label counts")
+        y = np.asarray(y)
+        counts = np.array([np.sum(y==c) for c in self.classes_], dtype=np.float64)
+        return np.log(counts) - np.log(counts.sum())
 
     def _feature_log_prob(self, X, y):
         """Return log theta of shape (n_classes, n_features) with add-alpha smoothing.
@@ -63,20 +68,51 @@ class NaiveBayesScratch:
         X may be a scipy sparse matrix or a dense array. Think about alpha = 0: what happens to
         a word that never occurs in a class? (Report it. Do not hide it.)
         """
-        raise NotImplementedError("sum the feature mass per class, smooth with alpha, take logs")
+        y = np.asarray(y)
+        counts = np.zeros((len(self.classes_), X.shape[1]), dtype=np.float64)
+        for i, c in enumerate(self.classes_):
+            counts[i] = np.asarray(X[y == c].sum(axis=0)).ravel()
+
+        smoothed = counts + self.alpha
+        totals = smoothed.sum(axis=1, keepdims=True)
+
+        self.n_zero_prob_ = int(np.sum(smoothed == 0))
+        if self.n_zero_prob_ > 0:
+            warnings.warn(
+                f"alpha={self.alpha}: {self.n_zero_prob_} (class, word) pairs have zero count, "
+                "so their log theta is -inf. Any message containing one of those words gets "
+                "P(c | x) = 0 for that class no matter what the other words say."
+            )
+
+        with np.errstate(divide="ignore"):  # we already reported the zeros above
+            return np.log(smoothed) - np.log(totals)
 
     def fit(self, X, y):
         """Estimate the parameters. Sets classes_, class_log_prior_, feature_log_prob_; returns self."""
-        raise NotImplementedError("learn the class priors and the per-class word log-probabilities")
+        y = np.asarray(y)
+        X = X.tocsr() if sp.issparse(X) else np.asarray(X, dtype=np.float64)
+
+        self.classes_ = np.unique(y)
+        self.class_log_prior_ = self._class_log_prior(y)
+        self.feature_log_prob_ = self._feature_log_prob(X, y)
+        return self
+
+    def _joint_log_likelihood(self, X):
+        """log P(c) + sum_j x_j * log theta_cj, shape (n_samples, n_classes)."""
+        X = sp.csr_matrix(X, dtype=np.float64)
+        jll = X @ self.feature_log_prob_.T
+        return np.asarray(jll) + self.class_log_prior_
 
     def predict_log_proba(self, X):
         """Return log P(c | x) for every row of X, shape (n_samples, n_classes), rows normalized
         so that exp(...) sums to 1. Use log space and log-sum-exp (scipy.special.logsumexp is fine)."""
-        raise NotImplementedError("joint log likelihood, then normalize in log space")
+        jll = self._joint_log_likelihood(X)
+        return jll - logsumexp(jll, axis=1, keepdims=True)
 
     def predict(self, X):
         """Return the most probable class label for each row of X."""
-        raise NotImplementedError("argmax over the joint log likelihood")
+        jll = self._joint_log_likelihood(X)
+        return self.classes_[np.argmax(jll, axis=1)]
 
 
 def build_nb(cfg):
